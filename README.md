@@ -1,6 +1,8 @@
+<img src="./hippoformer-fig6.png" width="400px"></img>
+
 # Hippoformer (wip)
 
-Implementation of Hippoformer, Integrating Hippocampus-inspired Spatial Memory with Transformers
+Implementation of [Hippoformer](https://openreview.net/forum?id=hxwV5EubAw), Integrating Hippocampus-inspired Spatial Memory with Transformers
 
 ## Citations
 
