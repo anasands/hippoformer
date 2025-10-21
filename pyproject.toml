@@ -24,6 +24,7 @@ classifiers=[
 ]
 
 dependencies = [
+    "assoc-scan",
     "einops>=0.8.1",
     "torch>=2.4",
     "x-mlps-pytorch",
