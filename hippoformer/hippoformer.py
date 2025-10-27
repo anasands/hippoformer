@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch import nn, Tensor, stack, einsum
+from torch import nn, Tensor, stack, einsum, tensor
 import torch.nn.functional as F
 from torch.nn import Module
 from torch.jit import ScriptModule, script_method
@@ -124,7 +124,16 @@ class mmTEM(Module):
     ):
         super().__init__()
 
+        # sensory
+
+        self.sensory_encoder = sensory_encoder
+        self.sensory_decoder = sensory_decoder
+
         dim_joint_rep = dim_encoded_sensory + dim_structure
+
+        self.dim_encoded_sensory = dim_encoded_sensory
+        self.dim_structure = dim_structure
+        self.joint_dims = (dim_structure, dim_encoded_sensory)
 
         # path integrator
 
@@ -140,7 +149,7 @@ class mmTEM(Module):
         self.to_keys = nn.Linear(dim_joint_rep, dim, bias = False)
         self.to_values = nn.Linear(dim_joint_rep, dim, bias = False)
 
-        self.meta_mlp = create_mlp(
+        self.meta_memory_mlp = create_mlp(
             dim = dim * 2,
             depth = meta_mlp_depth,
             dim_in = dim,
@@ -150,7 +159,7 @@ class mmTEM(Module):
 
         # mlp decoder (from meta mlp output to joint)
 
-        self.meta_mlp_output_decoder = create_mlp(
+        self.memory_output_decoder = create_mlp(
             dim = dim * 2,
             dim_in = dim,
             dim_out = dim_joint_rep,
@@ -168,10 +177,43 @@ class mmTEM(Module):
             depth = structure_variance_pred_mlp_depth
         )
 
+        # loss related
+
+        self.loss_weight_generative = loss_weight_generative
+        self.loss_weight_inference = loss_weight_inference
+        self.loss_weight_relational = loss_weight_relational
+        self.loss_weight_consistency = loss_weight_consistency
+        self.register_buffer('zero', tensor(0.), persistent = False)
+
     def forward(
         self,
         sensory,
         actions
     ):
         structural_codes = self.path_integrator(actions)
-        return structural_codes.sum()
+
+        # first have the structure code be able to fetch from the meta memory mlp
+
+        structure_codes_with_zero_sensory = F.pad(structural_codes, (0, self.dim_encoded_sensory))
+
+        queries = self.to_queries(structure_codes_with_zero_sensory)
+
+        retrieved = self.meta_memory_mlp(queries)
+
+        decoded_structure, decoded_encoded_sensory = self.memory_output_decoder(retrieved).split(self.joint_dims, dim = -1)
+
+        decoded_sensory = self.sensory_decoder(decoded_encoded_sensory)
+
+        generative_pred_loss = F.mse_loss(sensory, decoded_sensory)
+
+        # losses
+
+        total_loss = (
+            generative_pred_loss * self.loss_weight_generative
+        )
+
+        losses = (
+            generative_pred_loss,
+        )
+
+        return total_loss, losses
