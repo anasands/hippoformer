@@ -104,13 +104,73 @@ class PathIntegration(Module):
 class mmTEM(Module):
     def __init__(
         self,
-        dim
+        dim,
+        *,
+        sensory_encoder: Module,
+        sensory_decoder: Module,
+        dim_sensory,
+        dim_action,
+        dim_encoded_sensory,
+        dim_structure,
+        meta_mlp_depth = 2,
+        decoder_mlp_depth = 2,
+        structure_variance_pred_mlp_depth = 2,
+        path_integrate_kwargs: dict = dict(),
+        loss_weight_generative = 1.,
+        loss_weight_inference = 1.,
+        loss_weight_consistency = 1.,
+        loss_weight_relational = 1.,
     ):
         super().__init__()
 
+        dim_joint_rep = dim_encoded_sensory + dim_structure
+
+        # path integrator
+
+        self.path_integrator = PathIntegration(
+            dim_action = dim_action,
+            dim_structure = dim_structure,
+            **path_integrate_kwargs
+        )
+
+        # meta mlp related
+
+        self.to_queries = nn.Linear(dim_joint_rep, dim, bias = False)
+        self.to_keys = nn.Linear(dim_joint_rep, dim, bias = False)
+        self.to_values = nn.Linear(dim_joint_rep, dim, bias = False)
+
+        self.meta_mlp = create_mlp(
+            dim = dim * 2,
+            depth = meta_mlp_depth,
+            dim_in = dim,
+            dim_out = dim,
+            activation = nn.ReLU()
+        )
+
+        # mlp decoder (from meta mlp output to joint)
+
+        self.meta_mlp_output_decoder = create_mlp(
+            dim = dim * 2,
+            dim_in = dim,
+            dim_out = dim_joint_rep,
+            depth = decoder_mlp_depth,
+            activation = nn.ReLU()
+        )
+
+        # the mlp that predicts the variance for the structural code
+        # for correcting the generated structural code modeling the feedback from HC to MEC
+
+        self.structure_variance_pred_mlp_depth = create_mlp(
+            dim = dim_structure * 2,
+            dim_in = dim_structure * 2 + 1,
+            dim_out = dim_structure,
+            depth = structure_variance_pred_mlp_depth
+        )
 
     def forward(
         self,
-        data
+        sensory,
+        actions
     ):
-        raise NotImplementedError
+        structural_codes = self.path_integrator(actions)
+        return structural_codes.sum()
