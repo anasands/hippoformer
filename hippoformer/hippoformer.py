@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from torch import nn, Tensor, stack, einsum, tensor
+from torch import nn, Tensor, cat, stack, zeros_like, einsum, tensor
 import torch.nn.functional as F
 from torch.nn import Module
 from torch.jit import ScriptModule, script_method
@@ -185,6 +185,19 @@ class mmTEM(Module):
         self.loss_weight_consistency = loss_weight_consistency
         self.register_buffer('zero', tensor(0.), persistent = False)
 
+    def retrieve(
+        self,
+        structural_codes,
+        encoded_sensory
+    ):
+        joint = cat((structural_codes, encoded_sensory), dim = -1)
+
+        queries = self.to_queries(joint)
+
+        retrieved = self.meta_memory_mlp(queries)
+
+        return self.memory_output_decoder(retrieved).split(self.joint_dims, dim = -1)
+
     def forward(
         self,
         sensory,
@@ -192,28 +205,42 @@ class mmTEM(Module):
     ):
         structural_codes = self.path_integrator(actions)
 
-        # first have the structure code be able to fetch from the meta memory mlp
+        encoded_sensory = self.sensory_encoder(sensory)
 
-        structure_codes_with_zero_sensory = F.pad(structural_codes, (0, self.dim_encoded_sensory))
+        # 1. first have the structure code be able to fetch from the meta memory mlp
 
-        queries = self.to_queries(structure_codes_with_zero_sensory)
-
-        retrieved = self.meta_memory_mlp(queries)
-
-        decoded_structure, decoded_encoded_sensory = self.memory_output_decoder(retrieved).split(self.joint_dims, dim = -1)
+        decoded_structure, decoded_encoded_sensory = self.retrieve(structural_codes, zeros_like(encoded_sensory))
 
         decoded_sensory = self.sensory_decoder(decoded_encoded_sensory)
 
         generative_pred_loss = F.mse_loss(sensory, decoded_sensory)
 
+        # 2. relational
+
+        # 2a. structure from content
+
+        decoded_structure, decoded_encoded_sensory = self.retrieve(zeros_like(structural_codes), encoded_sensory)
+
+        structure_from_content_loss = F.mse_loss(decoded_structure, structural_codes)
+
+        # 2b. structure from structure
+
+        decoded_structure, decoded_encoded_sensory = self.retrieve(zeros_like(structural_codes), encoded_sensory)
+
+        structure_from_structure_loss = F.mse_loss(decoded_structure, structural_codes)
+
+        relational_loss = structure_from_content_loss + structure_from_structure_loss
+
         # losses
 
         total_loss = (
-            generative_pred_loss * self.loss_weight_generative
+            generative_pred_loss * self.loss_weight_generative +
+            relational_loss * self.loss_weight_relational
         )
 
         losses = (
             generative_pred_loss,
+            relational_loss
         )
 
         return total_loss, losses
