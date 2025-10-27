@@ -10,5 +10,6 @@ def test_path_integrate():
     actions = torch.randn(2, 16, 32)
 
     structure_codes = path_integrator(actions)
+    structure_codes = path_integrator(actions, structure_codes) # pass in previous structure codes, it will auto use the last one as hidden and pass it to the RNN
 
     assert structure_codes.shape == (2, 16, 64)

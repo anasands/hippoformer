@@ -86,14 +86,18 @@ class PathIntegration(Module):
 
     def forward(
         self,
-        actions # (b n d)
+        actions,                 # (b n d)
+        prev_structural = None   # (b n d) | (b d)
     ):
         batch = actions.shape[0]
 
         transitions = self.to_transitions(actions)
         transitions = self.mlp_out_to_weights(transitions)
 
-        return self.rnn(transitions)
+        if exists(prev_structural) and prev_structural.ndim == 3:
+            prev_structural = prev_structural[:, -1]
+
+        return self.rnn(transitions, prev_structural)
 
 # proposed mmTEM
 
@@ -103,6 +107,7 @@ class mmTEM(Module):
         dim
     ):
         super().__init__()
+
 
     def forward(
         self,
