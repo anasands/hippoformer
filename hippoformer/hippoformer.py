@@ -5,6 +5,7 @@ from torch import nn, Tensor, stack, einsum
 import torch.nn.functional as F
 from torch.nn import Module
 from torch.jit import ScriptModule, script_method
+from torch.func import vmap, grad, functional_call
 
 from einops import repeat, rearrange
 from einops.layers.torch import Rearrange
