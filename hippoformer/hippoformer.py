@@ -158,6 +158,14 @@ class mmTEM(Module):
             activation = nn.ReLU()
         )
 
+        def forward_with_mse_loss(params, keys, values):
+            pred = functional_call(self.meta_memory_mlp, params, keys)
+            return F.mse_loss(pred, values)
+
+        grad_fn = grad(forward_with_mse_loss)
+
+        self.per_sample_grad_fn = vmap(vmap(grad_fn, in_dims = (None, 0, 0)), in_dims = (None, 0, 0))
+
         # mlp decoder (from meta mlp output to joint)
 
         self.memory_output_decoder = create_mlp(
@@ -206,7 +214,8 @@ class mmTEM(Module):
     def forward(
         self,
         sensory,
-        actions
+        actions,
+        return_losses = False
     ):
         structural_codes = self.path_integrator(actions)
 
@@ -250,11 +259,20 @@ class mmTEM(Module):
 
         # 4. final inference loss
 
-        _, inf_encoded_sensory = self.retrieve(inf_structural_code, zeros_like(encoded_sensory))
+        final_structural_code, inf_encoded_sensory = self.retrieve(inf_structural_code, zeros_like(encoded_sensory))
 
         decoded_inf_sensory = self.sensory_decoder(inf_encoded_sensory)
 
         inference_pred_loss = F.mse_loss(sensory, decoded_inf_sensory)
+
+        # 5. store the final structural code from step 4 + encoded sensory
+
+        joint_code_to_store = cat((final_structural_code, encoded_sensory), dim = -1)
+
+        keys = self.to_keys(joint_code_to_store)
+        values = self.to_values(joint_code_to_store)
+
+        grads = self.per_sample_grad_fn(dict(self.meta_memory_mlp.named_parameters()), keys, values)
 
         # losses
 
@@ -271,5 +289,8 @@ class mmTEM(Module):
             consistency_loss,
             inference_pred_loss
         )
+
+        if not return_losses:
+            return total_loss
 
         return total_loss, losses
