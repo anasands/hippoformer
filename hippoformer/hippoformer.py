@@ -121,6 +121,7 @@ class mmTEM(Module):
         loss_weight_inference = 1.,
         loss_weight_consistency = 1.,
         loss_weight_relational = 1.,
+        integration_ratio_learned = True
     ):
         super().__init__()
 
@@ -170,7 +171,7 @@ class mmTEM(Module):
         # the mlp that predicts the variance for the structural code
         # for correcting the generated structural code modeling the feedback from HC to MEC
 
-        self.structure_variance_pred_mlp_depth = create_mlp(
+        self.structure_variance_pred_mlp = create_mlp(
             dim = dim_structure * 2,
             dim_in = dim_structure * 2 + 1,
             dim_out = dim_structure,
@@ -184,6 +185,10 @@ class mmTEM(Module):
         self.loss_weight_relational = loss_weight_relational
         self.loss_weight_consistency = loss_weight_consistency
         self.register_buffer('zero', tensor(0.), persistent = False)
+
+        # there is an integration ratio for error correction, but unclear what value this is fixed to or whether it is learned
+
+        self.integration_ratio = nn.Parameter(tensor(0.), requires_grad = integration_ratio_learned)
 
     def retrieve(
         self,
@@ -209,7 +214,7 @@ class mmTEM(Module):
 
         # 1. first have the structure code be able to fetch from the meta memory mlp
 
-        decoded_structure, decoded_encoded_sensory = self.retrieve(structural_codes, zeros_like(encoded_sensory))
+        decoded_gen_structure, decoded_encoded_sensory = self.retrieve(structural_codes, zeros_like(encoded_sensory))
 
         decoded_sensory = self.sensory_decoder(decoded_encoded_sensory)
 
@@ -231,16 +236,40 @@ class mmTEM(Module):
 
         relational_loss = structure_from_content_loss + structure_from_structure_loss
 
+        # 3. consistency - modeling a feedback system from hippocampus to path integration
+
+        corrected_structural_code, corrected_encoded_sensory = self.retrieve(decoded_gen_structure, encoded_sensory)
+
+        sensory_sse = (corrected_encoded_sensory - encoded_sensory).norm(dim = -1, keepdim = True).pow(2)
+
+        pred_variance = self.structure_variance_pred_mlp(cat((corrected_structural_code, decoded_gen_structure, sensory_sse), dim = -1))
+
+        inf_structural_code = decoded_gen_structure + (corrected_structural_code - decoded_gen_structure) * self.integration_ratio * pred_variance
+
+        consistency_loss = F.mse_loss(decoded_gen_structure, inf_structural_code)
+
+        # 4. final inference loss
+
+        _, inf_encoded_sensory = self.retrieve(inf_structural_code, zeros_like(encoded_sensory))
+
+        decoded_inf_sensory = self.sensory_decoder(inf_encoded_sensory)
+
+        inference_pred_loss = F.mse_loss(sensory, decoded_inf_sensory)
+
         # losses
 
         total_loss = (
             generative_pred_loss * self.loss_weight_generative +
-            relational_loss * self.loss_weight_relational
+            relational_loss * self.loss_weight_relational +
+            consistency_loss * self.loss_weight_consistency +
+            inference_pred_loss * self.loss_weight_inference
         )
 
         losses = (
             generative_pred_loss,
-            relational_loss
+            relational_loss,
+            consistency_loss,
+            inference_pred_loss
         )
 
         return total_loss, losses
