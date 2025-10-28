@@ -7,7 +7,8 @@ from torch.nn import Module
 from torch.jit import ScriptModule, script_method
 from torch.func import vmap, grad, functional_call
 
-from einops import repeat, rearrange
+from einx import multiply
+from einops import repeat, rearrange, pack, unpack
 from einops.layers.torch import Rearrange
 
 from x_mlps_pytorch import create_mlp
@@ -21,6 +22,16 @@ def exists(v):
 
 def default(v, d):
     return v if exists(v) else d
+
+def pack_with_inverse(t, pattern):
+    packed, packed_shape = pack([t], pattern)
+
+    def inverse(out, inv_pattern = None):
+        inv_pattern = default(inv_pattern, pattern)
+        unpacked, = unpack(out, packed_shape, inv_pattern)
+        return unpacked
+
+    return packed, inverse
 
 def l2norm(t):
     return F.normalize(t, dim = -1)
@@ -121,7 +132,8 @@ class mmTEM(Module):
         loss_weight_inference = 1.,
         loss_weight_consistency = 1.,
         loss_weight_relational = 1.,
-        integration_ratio_learned = True
+        integration_ratio_learned = True,
+        assoc_scan_kwargs: dict = dict()
     ):
         super().__init__()
 
@@ -149,6 +161,9 @@ class mmTEM(Module):
         self.to_queries = nn.Linear(dim_joint_rep, dim, bias = False)
         self.to_keys = nn.Linear(dim_joint_rep, dim, bias = False)
         self.to_values = nn.Linear(dim_joint_rep, dim, bias = False)
+
+        self.to_learned_optim_hparams = nn.Linear(dim_joint_rep, 3, bias = False) # for learning rate, forget gate, and momentum
+        self.assoc_scan = AssocScan(*assoc_scan_kwargs)
 
         self.meta_memory_mlp = create_mlp(
             dim = dim * 2,
@@ -217,6 +232,8 @@ class mmTEM(Module):
         actions,
         return_losses = False
     ):
+        batch = actions.shape[0]
+
         structural_codes = self.path_integrator(actions)
 
         encoded_sensory = self.sensory_encoder(sensory)
@@ -272,7 +289,43 @@ class mmTEM(Module):
         keys = self.to_keys(joint_code_to_store)
         values = self.to_values(joint_code_to_store)
 
-        grads = self.per_sample_grad_fn(dict(self.meta_memory_mlp.named_parameters()), keys, values)
+        lr, forget, beta = self.to_learned_optim_hparams(joint_code_to_store).unbind(dim = -1)
+
+        params = dict(self.meta_memory_mlp.named_parameters())
+        grads = self.per_sample_grad_fn(params, keys, values)
+
+        # update the meta mlp parameters
+
+        init_momentums = {k: zeros_like(v) for k, v in params.items()}
+        next_params = dict()
+
+        for (
+            (key, param),
+            (_, grad),
+            (_, init_momentum)
+        ) in zip(
+            params.items(),
+            grads.items(),
+            init_momentums.items()
+        ):
+
+            grad, inverse_pack = pack_with_inverse(grad, 'b t *')
+
+            grad = multiply('b t ..., b t', grad, lr)
+
+            expanded_beta = repeat(beta, 'b t -> b t w', w = grad.shape[-1])
+
+            init_momentum = repeat(init_momentum, '... -> b ...', b = batch)
+
+            update = self.assoc_scan(grad, expanded_beta.sigmoid(), init_momentum)
+
+            expanded_forget = repeat(forget, 'b t -> b t w', w = grad.shape[-1])
+
+            acc_update = self.assoc_scan(update, expanded_forget.sigmoid())
+
+            acc_update = inverse_pack(acc_update)
+
+            next_params[key] = param - acc_update[:, -1]
 
         # losses
 
