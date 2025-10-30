@@ -33,5 +33,11 @@ def test_mm_tem():
     actions = torch.randn(2, 16, 7)
     sensory = torch.randn(2, 16, 11)
 
-    loss = model(sensory, actions)
+    actions = torch.randn(2, 16, 7)
+    sensory = torch.randn(2, 16, 11)
+
+    next_params = model(sensory, actions, return_memory_mlp_params = True)
+    next_params = model(sensory, actions, memory_mlp_params = next_params, return_memory_mlp_params = True)
+
+    loss = model(sensory, actions, memory_mlp_params = next_params)
     loss.backward()

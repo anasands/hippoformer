@@ -179,7 +179,7 @@ class mmTEM(Module):
 
         grad_fn = grad(forward_with_mse_loss)
 
-        self.per_sample_grad_fn = vmap(vmap(grad_fn, in_dims = (None, 0, 0)), in_dims = (None, 0, 0))
+        self.per_sample_grad_fn = vmap(vmap(grad_fn, in_dims = (None, 0, 0)), in_dims = (0, 0, 0))
 
         # mlp decoder (from meta mlp output to joint)
 
@@ -213,6 +213,19 @@ class mmTEM(Module):
 
         self.integration_ratio = nn.Parameter(tensor(0.), requires_grad = integration_ratio_learned)
 
+    def init_params_and_momentum(
+        self,
+        batch_size
+    ):
+
+        params_dict = dict(self.meta_memory_mlp.named_parameters())
+
+        params = {name: repeat(param, '... -> b ...', b = batch_size) for name, param in params_dict.items()}
+
+        momentums = {name: zeros_like(param) for name, param in params.items()}
+
+        return params, momentums
+
     def retrieve(
         self,
         structural_codes,
@@ -230,7 +243,9 @@ class mmTEM(Module):
         self,
         sensory,
         actions,
-        return_losses = False
+        memory_mlp_params = None,
+        return_losses = False,
+        return_memory_mlp_params = False
     ):
         batch = actions.shape[0]
 
@@ -291,22 +306,28 @@ class mmTEM(Module):
 
         lr, forget, beta = self.to_learned_optim_hparams(joint_code_to_store).unbind(dim = -1)
 
-        params = dict(self.meta_memory_mlp.named_parameters())
+        if exists(memory_mlp_params):
+            params, momentums = memory_mlp_params
+        else:
+            params, momentums = self.init_params_and_momentum(batch)
+
+        # store by getting gradients of mse loss of keys and values
+
         grads = self.per_sample_grad_fn(params, keys, values)
 
-        # update the meta mlp parameters
+        # update the meta mlp parameters and momentums
 
-        init_momentums = {k: zeros_like(v) for k, v in params.items()}
         next_params = dict()
+        next_momentum = dict()
 
         for (
             (key, param),
             (_, grad),
-            (_, init_momentum)
+            (_, momentum)
         ) in zip(
             params.items(),
             grads.items(),
-            init_momentums.items()
+            momentums.items()
         ):
 
             grad, inverse_pack = pack_with_inverse(grad, 'b t *')
@@ -315,9 +336,7 @@ class mmTEM(Module):
 
             expanded_beta = repeat(beta, 'b t -> b t w', w = grad.shape[-1])
 
-            init_momentum = repeat(init_momentum, '... -> b ...', b = batch)
-
-            update = self.assoc_scan(grad, expanded_beta.sigmoid(), init_momentum)
+            update = self.assoc_scan(grad, expanded_beta.sigmoid(), momentum)
 
             expanded_forget = repeat(forget, 'b t -> b t w', w = grad.shape[-1])
 
@@ -325,7 +344,10 @@ class mmTEM(Module):
 
             acc_update = inverse_pack(acc_update)
 
+            # set the next params and momentum, which can be passed back in
+
             next_params[key] = param - acc_update[:, -1]
+            next_momentum[key] = update[:, -1]
 
         # losses
 
@@ -342,6 +364,9 @@ class mmTEM(Module):
             consistency_loss,
             inference_pred_loss
         )
+
+        if return_memory_mlp_params:
+            return next_params, next_momentum
 
         if not return_losses:
             return total_loss
