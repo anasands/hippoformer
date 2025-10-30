@@ -4,8 +4,6 @@
 
 Implementation of [Hippoformer](https://openreview.net/forum?id=hxwV5EubAw), Integrating Hippocampus-inspired Spatial Memory with Transformers
 
-[Temporary Discord](https://discord.gg/MkACrrkrYR)
-
 ## Citations
 
 ```bibtex
