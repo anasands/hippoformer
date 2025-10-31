@@ -455,6 +455,10 @@ class mmTEM(Module):
 
             update = self.assoc_scan(grad, expanded_beta.sigmoid(), momentum)
 
+            # store next momentum
+
+            next_momentum[key] = update[:, -1]
+
             # maybe muon
 
             if self.muon_update:
@@ -464,14 +468,13 @@ class mmTEM(Module):
 
             expanded_forget = repeat(forget, 'b t -> b t w', w = grad.shape[-1])
 
-            acc_update = self.assoc_scan(update, expanded_forget.sigmoid())
+            acc_update = self.assoc_scan(-update, expanded_forget.sigmoid(), param)
 
             acc_update = inverse_pack(acc_update)
 
             # set the next params and momentum, which can be passed back in
 
-            next_params[key] = param - acc_update[:, -1]
-            next_momentum[key] = update[:, -1]
+            next_params[key] =  acc_update[:, -1]
 
         # losses
 
