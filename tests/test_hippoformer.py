@@ -16,8 +16,10 @@ def test_path_integrate():
     assert structure_codes.shape == (2, 16, 64)
 
 @param('sensory_type', ('naive', '2d', '3d'))
+@param('muon_update', (True, False))
 def test_mm_tem(
-    sensory_type
+    sensory_type,
+    muon_update
 ):
     import torch
     from hippoformer.hippoformer import mmTEM
@@ -52,7 +54,8 @@ def test_mm_tem(
         dim_sensory = 11,
         dim_action = 7,
         dim_structure = 32,
-        dim_encoded_sensory = 32
+        dim_encoded_sensory = 32,
+        muon_update = muon_update
     )
 
     actions = torch.randn(2, 16, 7)

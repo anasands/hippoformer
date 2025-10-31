@@ -38,6 +38,40 @@ def pack_with_inverse(t, pattern):
 def l2norm(t):
     return F.normalize(t, dim = -1)
 
+# Muon - Jordan et al from oss community - applied to the latest version of titans
+
+def newtonschulz5(
+    t,
+    steps = 5,
+    eps = 1e-7,
+    coefs = (3.4445, -4.7750, 2.0315)
+):
+    not_weights = t.ndim <= 3
+
+    if not_weights:
+        return t
+
+    shape = t.shape
+    should_transpose = shape[-2] > shape[-1]
+
+    if should_transpose:
+        t = t.transpose(-1, -2)
+
+    t, inv_pack = pack_with_inverse(t, '* i j')
+    t = t / t.norm(dim = (-1, -2), keepdim = True).clamp(min = eps)
+
+    a, b, c = coefs
+
+    for _ in range(steps):
+        A = t @ t.transpose(-1, -2)
+        B = b * A + c * A @ A
+        t = a * t + B @ t
+
+    if should_transpose:
+        t = t.transpose(-1, -2)
+
+    return inv_pack(t)
+
 # sensory encoder decoder for 2d
 
 grid_sensory_enc_dec = (
@@ -209,6 +243,7 @@ class mmTEM(Module):
         loss_weight_consistency = 1.,
         loss_weight_relational = 1.,
         integration_ratio_learned = True,
+        muon_update = False,
         assoc_scan_kwargs: dict = dict()
     ):
         super().__init__()
@@ -286,6 +321,10 @@ class mmTEM(Module):
         self.loss_weight_relational = loss_weight_relational
         self.loss_weight_consistency = loss_weight_consistency
         self.register_buffer('zero', tensor(0.), persistent = False)
+
+        # update with muon
+
+        self.muon_update = muon_update
 
         # there is an integration ratio for error correction, but unclear what value this is fixed to or whether it is learned
 
@@ -415,6 +454,13 @@ class mmTEM(Module):
             expanded_beta = repeat(beta, 'b t -> b t w', w = grad.shape[-1])
 
             update = self.assoc_scan(grad, expanded_beta.sigmoid(), momentum)
+
+            # maybe muon
+
+            if self.muon_update:
+                update = newtonschulz5(update)
+
+            # with forget gating
 
             expanded_forget = repeat(forget, 'b t -> b t w', w = grad.shape[-1])
 
