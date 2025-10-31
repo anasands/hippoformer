@@ -1,6 +1,6 @@
 [project]
 name = "hippoformer"
-version = "0.0.7"
+version = "0.0.8"
 description = "hippoformer"
 authors = [
     { name = "Phil Wang", email = "lucidrains@gmail.com" }
@@ -25,6 +25,7 @@ classifiers=[
 
 dependencies = [
     "assoc-scan",
+    "beartype",
     "einx>=0.3.0",
     "einops>=0.8.1",
     "torch>=2.4",

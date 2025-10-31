@@ -7,6 +7,8 @@ from torch.nn import Module
 from torch.jit import ScriptModule, script_method
 from torch.func import vmap, grad, functional_call
 
+from beartype import beartype
+
 from einx import multiply
 from einops import repeat, rearrange, pack, unpack
 from einops.layers.torch import Rearrange
@@ -35,6 +37,80 @@ def pack_with_inverse(t, pattern):
 
 def l2norm(t):
     return F.normalize(t, dim = -1)
+
+# sensory encoder decoder for 2d
+
+grid_sensory_enc_dec = (
+    create_mlp(
+        dim = 32 * 2,
+        dim_in = 9,
+        dim_out = 32,
+        depth = 3,
+    ),
+    create_mlp(
+        dim = 32 * 2,
+        dim_in = 32,
+        dim_out = 9,
+        depth = 3,
+    ),
+)
+
+# sensory encoder decoder for 3d maze
+
+class EncoderPackTime(Module):
+    def __init__(self, fn: Module):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x):
+        x = rearrange(x, 'b c t h w -> b t c h w')
+        x, packed_shape = pack([x], '* c h w')
+
+        x = self.fn(x)
+
+        x, = unpack(x, packed_shape, '* d')
+        print(x.shape)
+        return x
+
+class DecoderPackTime(Module):
+    def __init__(self, fn: Module):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, x):
+        x, packed_shape = pack(x, '* d')
+
+        x = self.fn(x)
+
+        x = unpack(x, packed_shape, '* c h w')
+        x = rearrange(x, 'b t c h w -> b c t h w')
+        return x
+
+maze_sensory_enc_dec = (
+    EncoderPackTime(nn.Sequential(
+        nn.Conv2d(3, 16, 7, 2, padding = 3),
+        nn.ReLU(),
+        nn.Conv2d(16, 32, 3, 2, 1),
+        nn.ReLU(),
+        nn.Conv2d(32, 64, 3, 2, 1),
+        nn.ReLU(),
+        nn.Conv2d(64, 128, 3, 2, 1),
+        nn.ReLU(),
+        Rearrange('b ... -> b (...)'),
+        nn.Linear(2048, 32)
+    )),
+    DecoderPackTime(nn.Sequential(
+        nn.Linear(32, 2048),
+        Rearrange('b (c h w) -> b c h w', c = 128, h = 4),
+        nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding = (1, 1)),
+        nn.ReLU(),
+        nn.ConvTranspose2d(64, 32, 3, 2, 1, output_padding = (1, 1)),
+        nn.ReLU(),
+        nn.ConvTranspose2d(32, 16, 3, 2, 1, output_padding = (1, 1)),
+        nn.ReLU(),
+        nn.ConvTranspose2d(16, 3, 3, 2, 1, output_padding = (1, 1))
+    ))
+)
 
 # path integration
 
@@ -114,12 +190,12 @@ class PathIntegration(Module):
 # proposed mmTEM
 
 class mmTEM(Module):
+    @beartype
     def __init__(
         self,
         dim,
         *,
-        sensory_encoder: Module,
-        sensory_decoder: Module,
+        sensory_encoder_decoder: tuple[Module, Module],
         dim_sensory,
         dim_action,
         dim_encoded_sensory,
@@ -138,6 +214,8 @@ class mmTEM(Module):
         super().__init__()
 
         # sensory
+
+        sensory_encoder, sensory_decoder = sensory_encoder_decoder
 
         self.sensory_encoder = sensory_encoder
         self.sensory_decoder = sensory_decoder
